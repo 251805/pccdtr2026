@@ -394,10 +394,10 @@ export default function App() {
           setStatusMessage(fallbackMsg);
         }
 
-        // Test the Apps Script URL directly from the client browser!
+        // Test the Apps Script URL directly from the client browser! Use text/plain to avoid CORS preflight OPTIONS requests.
         const response = await fetch(scriptUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify({ action: 'get_employees' })
         });
 
