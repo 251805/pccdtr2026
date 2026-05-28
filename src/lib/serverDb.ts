@@ -17,8 +17,6 @@ export let fallbackLegacyLogs: AttendanceLogLegacy[] = [];
 // Shared server state for OAuth
 export let adminAccessToken: string | null = null;
 export let activeSpreadsheetId: string | null = null;
-export let googleAppsScriptUrl: string | null = null;
-export let lastAppsScriptError: string | null = null;
 
 const configPath = path.join(process.cwd(), 'sheet-config.json');
 
@@ -29,23 +27,18 @@ try {
     const parsed = JSON.parse(raw);
     adminAccessToken = parsed.adminAccessToken || null;
     activeSpreadsheetId = parsed.activeSpreadsheetId || null;
-    googleAppsScriptUrl = parsed.googleAppsScriptUrl || null;
-    console.log("Loaded sheet configuration successfully. Persisted Sheet ID:", activeSpreadsheetId, "Apps Script:", googleAppsScriptUrl);
+    console.log("Loaded sheet configuration successfully. Persisted Sheet ID:", activeSpreadsheetId);
   }
 } catch (e) {
   console.error("Failed to load sheet-config.json:", e);
 }
 
-export function setSharedAuth(token: string | null, sheetId: string | null, appsScriptUrl: string | null = null) {
+export function setSharedAuth(token: string | null, sheetId: string | null) {
   adminAccessToken = token;
   activeSpreadsheetId = sheetId;
-  googleAppsScriptUrl = appsScriptUrl || null;
-  if (!googleAppsScriptUrl) {
-    lastAppsScriptError = null;
-  }
   
   try {
-    fs.writeFileSync(configPath, JSON.stringify({ adminAccessToken, activeSpreadsheetId, googleAppsScriptUrl }, null, 2), 'utf8');
+    fs.writeFileSync(configPath, JSON.stringify({ adminAccessToken, activeSpreadsheetId }, null, 2), 'utf8');
     console.log("Saved sheet configuration context successfully.");
   } catch (e) {
     console.error("Failed to save sheet-config.json:", e);
@@ -53,62 +46,7 @@ export function setSharedAuth(token: string | null, sheetId: string | null, apps
 }
 
 export function getSharedAuth() {
-  return { adminAccessToken, activeSpreadsheetId, googleAppsScriptUrl, lastAppsScriptError };
-}
-
-// REST Google Apps Script Helper
-async function callAppsScript(payload: any): Promise<any> {
-  if (!googleAppsScriptUrl) {
-    throw new Error('Google Apps Script Web App URL is not configured.');
-  }
-
-  try {
-    const response = await fetch(googleAppsScriptUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      const err = `Google Apps Script API Error (${response.status}): ${errText}`;
-      lastAppsScriptError = err;
-      throw new Error(err);
-    }
-
-    const responseText = await response.text();
-    const trimmedText = responseText.trim();
-
-    // If the response starts with '<', it is an HTML/XML page (often a web redirect, login page, or permission screen)
-    if (trimmedText.startsWith('<')) {
-      let errorHelp = "The Apps Script connection returned HTML instead of JSON data.";
-      if (googleAppsScriptUrl.includes('/edit') || googleAppsScriptUrl.includes('/home')) {
-        errorHelp += " You may have pasted your Script Editor URL. Please deploy your script as a Web App (Deploy -> New deployment -> Web app) and make sure to copy the production Web App URL ending in '/exec'.";
-      } else if (googleAppsScriptUrl.includes('/dev')) {
-        errorHelp += " You pasted a '/dev' URL (Test deployment). Test deployments require cookies and browser access. Please deploy a production Web App, choose 'Execute as: Me' and 'Who has access: Anyone', and copy the URL ending in '/exec'.";
-      } else {
-        errorHelp += " This usually means access control settings are locked or authorization is incomplete. Please look at your Apps Script project, click 'Deploy -> New deployment' (or Manage Deployments -> Edit), set 'Execute as' to 'Me' and 'Who has access' to 'Anyone', click deploy, and make sure you approve any requested Google Authorization/Permissions popup.";
-      }
-      lastAppsScriptError = errorHelp;
-      throw new Error(errorHelp);
-    }
-
-    try {
-      const parsedData = JSON.parse(trimmedText);
-      // Success! Clear error state
-      lastAppsScriptError = null;
-      return parsedData;
-    } catch (err: any) {
-      const parseErr = `Failed to parse Apps Script response as JSON. Error: ${err.message}`;
-      lastAppsScriptError = parseErr;
-      throw new Error(parseErr);
-    }
-  } catch (outerErr: any) {
-    lastAppsScriptError = outerErr.message || String(outerErr);
-    throw outerErr;
-  }
+  return { adminAccessToken, activeSpreadsheetId };
 }
 
 // REST Google Sheets Helper
@@ -203,30 +141,8 @@ async function initializeHeadersIfEmpty() {
 /**
  * Fetches all Employees from Google Sheets or falls back to server memory
  */
-export async function getAllEmployees(throwOnError = false): Promise<Employee[]> {
-  if (googleAppsScriptUrl) {
-    try {
-      const data = await callAppsScript({ action: 'get_employees' });
-      if (data && data.values) {
-        const employees: Employee[] = data.values.map((row: any[], index: number) => ({
-          id: row[0] || index + 1,
-          eid: String(row[1] || '').trim(),
-          name: row[2] || 'Unknown',
-          rate_per_day: Number(row[3] || 0),
-          philhealth: Number(row[4] || 0)
-        })).filter((e: Employee) => e.eid);
-        if (employees.length > 0) {
-          fallbackEmployees = employees;
-        }
-        return employees;
-      }
-    } catch (e) {
-      console.error('Error fetching employees from Apps Script Web App:', e);
-      if (throwOnError) {
-        throw e;
-      }
-    }
-  } else if (adminAccessToken && activeSpreadsheetId) {
+export async function getAllEmployees(): Promise<Employee[]> {
+  if (adminAccessToken && activeSpreadsheetId) {
     try {
       const data = await sheetsFetch('/values/employees!A2:E5000', 'GET');
       if (data.values) {
@@ -256,23 +172,7 @@ export async function getAllEmployees(throwOnError = false): Promise<Employee[]>
 export async function saveRawAttendance(attendance: Attendance): Promise<void> {
   fallbackAttendance.push(attendance);
 
-  if (googleAppsScriptUrl) {
-    try {
-      await callAppsScript({
-        action: 'save_raw_attendance',
-        attendance: {
-          id: attendance.id,
-          employee_id: attendance.employee_id,
-          action: attendance.action,
-          source: attendance.source,
-          timestamp: attendance.timestamp,
-          remarks: attendance.remarks || ''
-        }
-      });
-    } catch (e) {
-      console.error('Error syncing raw attendance to Apps Script Web App:', e);
-    }
-  } else if (adminAccessToken && activeSpreadsheetId) {
+  if (adminAccessToken && activeSpreadsheetId) {
     try {
       const row = [
         attendance.id,
@@ -346,34 +246,8 @@ export async function processSessionAndLegacyWrite(
     };
     fallbackLegacyLogs.push(legacyLog);
 
-    // Push details to Google Sheets via Apps Script Web App
-    if (googleAppsScriptUrl) {
-      try {
-        await callAppsScript({
-          action: 'process_session_and_legacy',
-          session: {
-            id: session.id,
-            employee_id: session.employee_id,
-            login_at: session.login_at,
-            logout_at: session.logout_at,
-            date: session.date
-          },
-          legacy: {
-            id: legacyLog.id,
-            eid: legacyLog.eid,
-            name: legacyLog.name,
-            start_time: legacyLog.start_time,
-            end_time: legacyLog.end_time,
-            date: legacyLog.date,
-            remarks: legacyLog.remarks,
-            tardiness: legacyLog.tardiness,
-            undertime: legacyLog.undertime
-          }
-        });
-      } catch (e) {
-        console.error('Failed to sync login session to Google Apps Script Web App:', e);
-      }
-    } else if (adminAccessToken && activeSpreadsheetId) {
+    // Push details to Google Sheets
+    if (adminAccessToken && activeSpreadsheetId) {
       try {
         await sheetsFetch('/values/attendance_sessions!A2:append?valueInputOption=USER_ENTERED', 'POST', {
           values: [[session.id, session.employee_id, session.login_at, '', session.date]]
@@ -461,34 +335,8 @@ export async function processSessionAndLegacyWrite(
       });
     }
 
-    // Sync via Apps Script
-    if (googleAppsScriptUrl) {
-      try {
-        await callAppsScript({
-          action: 'process_session_and_legacy',
-          session: {
-            id: targetSessionId,
-            employee_id: eid,
-            login_at: resolvedLoginTime,
-            logout_at: timestamp,
-            date: dateStr
-          },
-          legacy: {
-            id: `legacy_${Date.now()}`,
-            eid,
-            name: emp.name,
-            start_time: resolvedLoginTime,
-            end_time: timestamp,
-            date: dateStr,
-            remarks,
-            tardiness: legacyIdx !== -1 ? fallbackLegacyLogs[legacyIdx].tardiness : 0,
-            undertime
-          }
-        });
-      } catch (e) {
-        console.error('Failed to update Google Apps Script Web App with checkout details:', e);
-      }
-    } else if (adminAccessToken && activeSpreadsheetId) {
+    // Google sheet updates
+    if (adminAccessToken && activeSpreadsheetId) {
       try {
         // Find existing sessions in Sheets to edit
         const sData = await sheetsFetch('/values/attendance_sessions!A1:E5000', 'GET');
@@ -549,22 +397,7 @@ export async function processSessionAndLegacyWrite(
 export async function saveRosterUpdate(updatedRoster: Employee[]): Promise<void> {
   fallbackEmployees = updatedRoster;
 
-  if (googleAppsScriptUrl) {
-    try {
-      await callAppsScript({
-        action: 'save_roster_update',
-        roster: updatedRoster.map(e => ({
-          id: e.id,
-          eid: e.eid,
-          name: e.name,
-          rate_per_day: e.rate_per_day,
-          philhealth: e.philhealth
-        }))
-      });
-    } catch (e) {
-      console.error('Failed to sync bulk roster update to Google Apps Script Web App:', e);
-    }
-  } else if (adminAccessToken && activeSpreadsheetId) {
+  if (adminAccessToken && activeSpreadsheetId) {
     try {
       // Overwrite employee sheet: Clear and write again (safest for updates)
       await sheetsFetch('/values/employees!A2:E5000?valueInputOption=USER_ENTERED', 'PUT', {
@@ -585,28 +418,7 @@ export async function saveRosterUpdate(updatedRoster: Employee[]): Promise<void>
  * Fetches all legacy visual logs from Google Sheets or falls back to server memory
  */
 export async function getAllLegacyLogs(): Promise<AttendanceLogLegacy[]> {
-  if (googleAppsScriptUrl) {
-    try {
-      const data = await callAppsScript({ action: 'get_legacy_logs' });
-      if (data && data.values) {
-        const logs: AttendanceLogLegacy[] = data.values.map((row: any[], index: number) => ({
-          id: row[0] || `legacy_sheet_${index}`,
-          eid: String(row[1] || '').trim(),
-          name: row[2] || 'Unknown',
-          start_time: row[3] || null,
-          end_time: row[4] || null,
-          date: row[5] || '',
-          remarks: row[6] || '',
-          tardiness: Number(row[7] || 0),
-          undertime: Number(row[8] || 0)
-        })).filter((l: AttendanceLogLegacy) => l.eid);
-        fallbackLegacyLogs = logs;
-        return logs;
-      }
-    } catch (e) {
-      console.error('Error fetching legacy logs from Apps Script Web App:', e);
-    }
-  } else if (adminAccessToken && activeSpreadsheetId) {
+  if (adminAccessToken && activeSpreadsheetId) {
     try {
       const data = await sheetsFetch('/values/attendance_logs!A2:I5000', 'GET');
       if (data.values) {
@@ -635,25 +447,7 @@ export async function getAllLegacyLogs(): Promise<AttendanceLogLegacy[]> {
  * Fetches raw transaction list from Google Sheets or falls back to server memory
  */
 export async function getAllRawAttendance(): Promise<Attendance[]> {
-  if (googleAppsScriptUrl) {
-    try {
-      const data = await callAppsScript({ action: 'get_raw_attendance' });
-      if (data && data.values) {
-        const list: Attendance[] = data.values.map((row: any[], index: number) => ({
-          id: row[0] || `raw_sheet_${index}`,
-          employee_id: String(row[1] || '').trim(),
-          action: row[2] as 'LOGIN' | 'LOGOUT',
-          source: row[3] || 'MANUAL',
-          timestamp: row[4] || '',
-          remarks: row[5] || ''
-        })).filter((l: Attendance) => l.employee_id);
-        fallbackAttendance = list;
-        return list;
-      }
-    } catch (e) {
-      console.error('Error fetching raw attendance from Apps Script Web App:', e);
-    }
-  } else if (adminAccessToken && activeSpreadsheetId) {
+  if (adminAccessToken && activeSpreadsheetId) {
     try {
       const data = await sheetsFetch('/values/attendance!A2:F5000', 'GET');
       if (data.values) {
@@ -679,24 +473,7 @@ export async function getAllRawAttendance(): Promise<Attendance[]> {
  * Fetches all sessions from Google Sheets or falls back to server memory
  */
 export async function getAllSessions(): Promise<AttendanceSession[]> {
-  if (googleAppsScriptUrl) {
-    try {
-      const data = await callAppsScript({ action: 'get_sessions' });
-      if (data && data.values) {
-        const list: AttendanceSession[] = data.values.map((row: any[], index: number) => ({
-          id: row[0] || `sess_sheet_${index}`,
-          employee_id: String(row[1] || '').trim(),
-          login_at: row[2] || '',
-          logout_at: row[3] || null,
-          date: row[4] || ''
-        })).filter((s: AttendanceSession) => s.employee_id);
-        fallbackSessions = list;
-        return list;
-      }
-    } catch (e) {
-      console.error('Error fetching sessions from Apps Script Web App:', e);
-    }
-  } else if (adminAccessToken && activeSpreadsheetId) {
+  if (adminAccessToken && activeSpreadsheetId) {
     try {
       const data = await sheetsFetch('/values/attendance_sessions!A2:E5000', 'GET');
       if (data.values) {

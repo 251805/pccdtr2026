@@ -5,6 +5,7 @@
 
 import express from "express";
 import path from "path";
+import { createServer as createViteServer } from "vite";
 import { 
   normalizeEID, 
   getClosestShift, 
@@ -53,12 +54,9 @@ app.get("/api/health", (req, res) => {
 
 // Configure Google Sheets session details
 app.post("/api/auth/save-token", async (req, res) => {
-  const { accessToken, spreadsheetId, appsScriptUrl } = req.body;
-  if (!spreadsheetId) {
-    return res.status(400).json({ error: "spreadsheetId is required." });
-  }
-  if (!accessToken && !appsScriptUrl) {
-    return res.status(400).json({ error: "Either accessToken or appsScriptUrl is required to connect." });
+  const { accessToken, spreadsheetId } = req.body;
+  if (!accessToken || !spreadsheetId) {
+    return res.status(400).json({ error: "accessToken and spreadsheetId are required." });
   }
 
   // Extract pure spreadsheet ID if a full Google Sheets URL was pasted
@@ -66,44 +64,19 @@ app.post("/api/auth/save-token", async (req, res) => {
   const urlMatch = rawId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   const normalizedId = urlMatch && urlMatch[1] ? urlMatch[1] : rawId;
 
-  // Track previous authorization details for safety rollback
-  const previousConfig = getSharedAuth();
+  setSharedAuth(accessToken, normalizedId);
+  await ensureSpreadsheetStructure();
 
-  try {
-    // Stage the new connection settings globally
-    setSharedAuth(accessToken || null, normalizedId, appsScriptUrl || null);
-    
-    if (appsScriptUrl) {
-      // Verify connectivity by running a synchronous roster fetch test
-      await getAllEmployees(true);
-    } else {
-      // Verify direct Google Sheets access
-      await ensureSpreadsheetStructure();
-    }
-
-    res.json({ 
-      success: true, 
-      message: appsScriptUrl ? "Google Apps Script connection active." : "Google Sheets context saved successfully.",
-      connected: true
-    });
-  } catch (err: any) {
-    // Discard broken staging state, rollback to previous working layout configuration
-    setSharedAuth(
-      previousConfig.adminAccessToken, 
-      previousConfig.activeSpreadsheetId, 
-      previousConfig.googleAppsScriptUrl
-    );
-    
-    console.error("Connection sync verification failed:", err);
-    res.status(400).json({ 
-      error: err.message || "Failed to establish a valid connection. Check configuration details."
-    });
-  }
+  res.json({ 
+    success: true, 
+    message: "Google Sheets context saved successfully.",
+    connected: true
+  });
 });
 
 // Clear Google Sheets connection (go offline/back up database mode)
 app.post("/api/auth/clear-token", (req, res) => {
-  setSharedAuth(null, null, null);
+  setSharedAuth(null, null);
   res.json({ 
     success: true, 
     message: "Google Sheets connection terminated. Operating in Offline storage.",
@@ -113,15 +86,13 @@ app.post("/api/auth/clear-token", (req, res) => {
 
 // Get configuration, token status, and current validation tokens
 app.get("/api/config", (req, res) => {
-  const { adminAccessToken, activeSpreadsheetId, googleAppsScriptUrl, lastAppsScriptError } = getSharedAuth();
+  const { adminAccessToken, activeSpreadsheetId } = getSharedAuth();
   const todayStr = getManilaDateStr(0);
   const yesterdayStr = getManilaDateStr(-1);
 
   res.json({
-    connected: !!adminAccessToken || !!googleAppsScriptUrl,
+    connected: !!adminAccessToken,
     spreadsheetId: activeSpreadsheetId,
-    googleAppsScriptUrl,
-    appsScriptError: lastAppsScriptError,
     todayToken: `a10dance-daily-qr-${todayStr}`,
     yesterdayToken: `a10dance-daily-qr-${yesterdayStr}`,
     serverTime: new Date().toISOString(),
@@ -278,59 +249,11 @@ app.post("/api/scan", async (req, res) => {
 });
 
 
-// Proxy endpoint to prevent CORS blocks of Apps Script Web App in static / serverless hosting environments (e.g. Vercel)
-app.post("/api/proxy", async (req: express.Request, res: express.Response) => {
-  const { scriptUrl, payload } = req.body;
-  if (!scriptUrl) {
-    return res.status(400).json({ error: "scriptUrl is required." });
-  }
-
-  try {
-    // Perform server-to-server request
-    const response = await fetch(scriptUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain"
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      return res.status(response.status).json({ 
-        error: `Apps Script replied with HTTP Error ${response.status}` 
-      });
-    }
-
-    const rawText = await response.text();
-    const trimmed = rawText.trim();
-
-    if (trimmed.startsWith("<")) {
-      return res.status(422).json({ 
-        error: "Apps Script returned HTML. Check permissions (Anyone)." 
-      });
-    }
-
-    const parsed = JSON.parse(trimmed);
-    res.json(parsed);
-  } catch (err: any) {
-    console.error("Proxy error:", err);
-    res.status(500).json({ error: err.message || "Failed to communicate with Apps Script via proxy" });
-  }
-});
-
-
 // -------------------------------------------------------------
 // Vite Dev & Production Serving Setup
 // -------------------------------------------------------------
 async function initServerAndListeners() {
-  if (process.env.VERCEL) {
-    // Under Vercel environment, static routing is handled natively via configuration,
-    // and listeners are managed serverless-side.
-    return;
-  }
-
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -350,5 +273,3 @@ async function initServerAndListeners() {
 }
 
 initServerAndListeners();
-
-export default app;

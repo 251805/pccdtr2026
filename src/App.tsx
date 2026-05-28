@@ -23,40 +23,6 @@ import {
   flushOfflinePunches
 } from './lib/db';
 import { Employee, AttendanceLogLegacy, Attendance } from './types';
-import {
-  isClientOnlyMode,
-  getClientScriptUrl,
-  getClientSpreadsheetId,
-  clientFetchEmployees,
-  clientFetchLegacyLogs,
-  clientUpdateRoster,
-  clientProcessScan
-} from './lib/clientSyncBridge';
-
-interface ExpressServerConfig {
-  isExpress: boolean;
-  googleAppsScriptUrl?: string | null;
-  spreadsheetId?: string | null;
-  appsScriptError?: string | null;
-  todayToken?: string;
-  serverTime?: string;
-}
-
-async function detectExpressServer(): Promise<ExpressServerConfig> {
-  try {
-    const res = await fetch('/api/config');
-    const contentType = res.headers.get("content-type");
-    if (res.ok && contentType && contentType.includes("application/json")) {
-      const config = await res.json();
-      if (config && typeof config === 'object' && 'serverTime' in config) {
-        return { isExpress: true, ...config };
-      }
-    }
-  } catch (e) {
-    console.warn("Express server lookup failed:", e);
-  }
-  return { isExpress: false };
-}
 
 // Components
 import TopNav from './components/TopNav';
@@ -77,17 +43,12 @@ export default function App() {
 
   // Connection and Network states
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-
-  // Anti-spam block for serverless fallback
-  const [lastPunchTimes] = useState<Record<string, number>>({});
   const [user, setUser] = useState<User | null>(null);
   const [needsAuth, setNeedsAuth] = useState(true);
   const [authChecking, setAuthChecking] = useState(true);
   
   // Active Spreadsheet State
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(null);
-  const [googleAppsScriptUrl, setGoogleAppsScriptUrl] = useState<string | null>(null);
-  const [appsScriptError, setAppsScriptError] = useState<string | null>(null);
 
   // Records and Data rosters states
   const [employeesList, setEmployeesList] = useState<Employee[]>([]);
@@ -147,44 +108,17 @@ export default function App() {
         setNeedsAuth(false);
         setAuthChecking(false);
 
-        // If sheet id is present in state, notify Express backend if express is running
-        const serverInfo = await detectExpressServer();
-        if (serverInfo.isExpress && savedSheetId && !isClientOnlyMode()) {
+        // If sheet id is present in state, notify Express backend
+        if (savedSheetId) {
           await syncTokenToBackend(savedSheetId);
         }
         refreshLocalData();
       },
-      async () => {
+      () => {
         setUser(null);
-        if (isClientOnlyMode()) {
-          const clientUrl = getClientScriptUrl();
-          const clientSheetId = getClientSpreadsheetId();
-          setGoogleAppsScriptUrl(clientUrl);
-          setSpreadsheetId(clientSheetId);
-          setNeedsAuth(false);
-          setAuthChecking(false);
-          refreshLocalData();
-        } else {
-          try {
-            const serverInfo = await detectExpressServer();
-            if (serverInfo.isExpress) {
-              if (!serverInfo.googleAppsScriptUrl) {
-                setNeedsAuth(true);
-              } else {
-                setNeedsAuth(false);
-              }
-            } else {
-              // Serverless/Vercel static deployment detected (no Node server response)
-              console.log("Vercel or client-only serverless hosting detected. Activating direct fallback mode.");
-              setNeedsAuth(false);
-            }
-          } catch {
-            setNeedsAuth(false);
-          } finally {
-            setAuthChecking(false);
-            refreshLocalData();
-          }
-        }
+        setNeedsAuth(true);
+        setAuthChecking(false);
+        refreshLocalData();
       }
     );
 
@@ -203,77 +137,39 @@ export default function App() {
   }, [user, spreadsheetId]);
 
   const refreshLocalData = async () => {
-    if (isClientOnlyMode()) {
-      const clientUrl = getClientScriptUrl();
-      if (clientUrl) {
-        try {
-          // Set local time zone offsets
-          setServerTime(new Date().toISOString());
-          const dateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
-          setTodayToken(`a10dance-daily-qr-${dateStr}`);
-
-          const emps = await clientFetchEmployees(clientUrl);
-          if (emps && emps.length > 0) {
-            setEmployeesList(emps);
-            updateCachedEmployees(emps);
-          }
-
-          const logs = await clientFetchLegacyLogs(clientUrl);
-          setAttendanceLogs(logs || []);
-          setAppsScriptError(null);
-        } catch (err: any) {
-          console.error("Client sync error:", err);
-          setAppsScriptError(err.message || String(err));
-          setEmployeesList(getCachedEmployees());
-        }
-        return;
-      }
-    }
-
     try {
-      const serverInfo = await detectExpressServer();
-      if (serverInfo.isExpress) {
-        setTodayToken(serverInfo.todayToken || '');
-        setServerTime(serverInfo.serverTime || '');
-        if (serverInfo.spreadsheetId && serverInfo.spreadsheetId !== spreadsheetId) {
-          setSpreadsheetId(serverInfo.spreadsheetId);
-          setSpreadsheetIdToCache(serverInfo.spreadsheetId);
-        } else if (!serverInfo.spreadsheetId && spreadsheetId) {
+      // Pull configuration
+      const configRes = await fetch('/api/config');
+      if (configRes.ok) {
+        const config = await configRes.json();
+        setTodayToken(config.todayToken);
+        setServerTime(config.serverTime);
+        if (config.spreadsheetId && config.spreadsheetId !== spreadsheetId) {
+          setSpreadsheetId(config.spreadsheetId);
+          setSpreadsheetIdToCache(config.spreadsheetId);
+        } else if (!config.spreadsheetId && spreadsheetId) {
           setSpreadsheetId(null);
           setSpreadsheetIdToCache(null);
         }
+      }
 
-        if (serverInfo.googleAppsScriptUrl) {
-          setGoogleAppsScriptUrl(serverInfo.googleAppsScriptUrl);
-          setNeedsAuth(false);
-        } else {
-          setGoogleAppsScriptUrl(null);
-        }
-        setAppsScriptError(serverInfo.appsScriptError || null);
+      // Pull crew member indices
+      const empRes = await fetch('/api/employees');
+      if (empRes.ok) {
+        const empData = await empRes.json();
+        setEmployeesList(empData);
+        updateCachedEmployees(empData);
+      }
 
-        // Pull crew member indices
-        const empRes = await fetch('/api/employees');
-        if (empRes.ok) {
-          const empData = await empRes.json();
-          setEmployeesList(empData);
-          updateCachedEmployees(empData);
-        }
-
-        // Pull daily sync logs
-        const logRes = await fetch('/api/logs');
-        if (logRes.ok) {
-          const logsPayload = await logRes.json();
-          setAttendanceLogs(logsPayload.legacy || []);
-        }
-      } else {
-        // Direct browser/offline local state when there is no Apps script or server configured yet
-        const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
-        setTodayToken(`a10dance-daily-qr-${todayStr}`);
-        setServerTime(new Date().toISOString());
-        setEmployeesList(getCachedEmployees());
+      // Pull daily sync logs
+      const logRes = await fetch('/api/logs');
+      if (logRes.ok) {
+        const logsPayload = await logRes.json();
+        setAttendanceLogs(logsPayload.legacy || []);
       }
     } catch (e) {
       console.warn("Standby Mode: fetching data directly from server offline fallback.");
+      // If server is not fully reachable or on errors, load cached localStorage datasets
       setEmployeesList(getCachedEmployees());
     }
   };
@@ -287,13 +183,8 @@ export default function App() {
         setNeedsAuth(false);
         refreshLocalData();
       }
-    } catch (e: any) {
-      console.error("Authentication error during admin login:", e);
-      const isDomainErr = e?.code === 'auth/unauthorized-domain' || e?.message?.includes('unauthorized-domain');
-      const domainSuggestion = isDomainErr 
-        ? "\n\nCRITICAL VERCEL STEPS:\n1. Open Firebase Console.\n2. Go to Authentication -> Settings -> Authorized Domains.\n3. Add your Vercel deployment domain (e.g., your-app.vercel.app) to the authorized domains list.\n\nWithout this, Firebase blocks authorization popups on Vercel!" 
-        : "";
-      alert(`Authentication failure. Connection cancelled or domain unauthorized.\n\nDetails: ${e?.message || String(e)}${domainSuggestion}`);
+    } catch {
+      alert('Authentication failure. Cancelled by operator.');
     }
   };
 
@@ -308,162 +199,16 @@ export default function App() {
     setSpreadsheetId(id);
     setSpreadsheetIdToCache(id);
     if (id) {
-       const serverInfo = await detectExpressServer();
-       if (serverInfo.isExpress) {
-         const status = await syncTokenToBackend(id);
-         if (status) {
-           setPunchStatus('SUCCESS');
-           setStatusMessage('Google Sheets synchronization active! Schema checks validated.');
-           setTimeout(() => setPunchStatus('IDLE'), 3000);
-         }
-       } else {
-         // Offline/Vercel standby mode: save spreadsheet id in cache directly
-         localStorage.setItem('a10dance_client_spreadsheet_id', id);
+       const status = await syncTokenToBackend(id);
+       if (status) {
          setPunchStatus('SUCCESS');
-         setStatusMessage('Google Sheets standalone reference updated.');
+         setStatusMessage('Google Sheets synchronization active! Schema checks validated.');
          setTimeout(() => setPunchStatus('IDLE'), 3000);
        }
     } else {
-       // Disconnect both server and client caches
-       localStorage.removeItem('a10dance_client_only_apps_script');
-       localStorage.removeItem('a10dance_client_script_url');
-       localStorage.removeItem('a10dance_client_spreadsheet_id');
-       setGoogleAppsScriptUrl(null);
-       setSpreadsheetId(null);
-       setSpreadsheetIdToCache(null);
-       await fetch('/api/auth/clear-token', { method: 'POST' }).catch(() => {});
+       // Disconnect
+       await fetch('/api/auth/clear-token', { method: 'POST' });
     }
-    refreshLocalData();
-  };
-
-  const handleBindAppsScript = async (id: string, scriptUrl: string) => {
-    setPunchStatus('LOADING');
-    setStatusMessage('Establishing secure Apps Script tunnel connection...');
-    
-    let serverOk = false;
-    let fallbackMsg = '';
-
-    try {
-      const serverInfo = await detectExpressServer();
-      if (serverInfo.isExpress) {
-        const res = await fetch('/api/auth/save-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            spreadsheetId: id,
-            appsScriptUrl: scriptUrl
-          })
-        });
-
-        const contentType = res.headers.get("content-type");
-        if (res.ok && contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          if (data && data.success) {
-            serverOk = true;
-            // Normal Express server initialization succeeded
-            localStorage.removeItem('a10dance_client_only_apps_script');
-            localStorage.removeItem('a10dance_client_script_url');
-            localStorage.removeItem('a10dance_client_spreadsheet_id');
-
-            setSpreadsheetId(id);
-            setSpreadsheetIdToCache(id);
-            setGoogleAppsScriptUrl(scriptUrl);
-            setNeedsAuth(false);
-
-            setPunchStatus('SUCCESS');
-            setStatusMessage('Google Apps Script synchronization initialized permanently! Connection is live.');
-            setTimeout(() => setPunchStatus('IDLE'), 5000);
-          } else {
-            throw new Error(data.error || 'Connection rejected by backend.');
-          }
-        } else {
-          fallbackMsg = 'Server did not return JSON. Starting client-side direct verification...';
-        }
-      } else {
-        fallbackMsg = 'Express backend not detected. Starting client-side direct verification...';
-      }
-    } catch (e: any) {
-      // Network or API route 404 failed - trigger direct client-side fallback
-      console.warn("Express endpoint failed/unreached, starting serverless direct handshake fallback.", e);
-      fallbackMsg = 'Express backend not detected or returned error. Triggering direct client-side handshake...';
-    }
-
-    if (!serverOk) {
-      try {
-        if (fallbackMsg) {
-          setStatusMessage(fallbackMsg);
-        }
-
-        // Test the Apps Script URL via our lightweight proxy first to avoid browser CORS / redirect preflight blocks
-        let response;
-        let viaProxy = false;
-        try {
-          const proxyTestRes = await fetch('/api/proxy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              scriptUrl: scriptUrl,
-              payload: { action: 'get_employees' }
-            })
-          });
-          if (proxyTestRes.ok) {
-            response = proxyTestRes;
-            viaProxy = true;
-          }
-        } catch (e) {
-          console.warn("Proxy validation route failed, attempting direct fetch fallback...", e);
-        }
-
-        if (!response) {
-          response = await fetch(scriptUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain' },
-            body: JSON.stringify({ action: 'get_employees' })
-          });
-        }
-
-        if (!response.ok) {
-          throw new Error(`Google Apps Script directly returned HTTP Error: ${response.status}`);
-        }
-
-        const rawText = await response.text();
-        const trimmed = rawText.trim();
-        if (trimmed.startsWith('<')) {
-          if (scriptUrl.includes('/edit') || scriptUrl.includes('/home')) {
-            throw new Error("You pasted your Script Editor URL! Please deploy as a Web App (Deploy -> New deployment) and copy the production Web App URL ending in '/exec'.");
-          } else if (scriptUrl.includes('/dev')) {
-            throw new Error("You pasted a /dev URL! Please deploy as a new production Web App with access 'Anyone'.");
-          } else {
-            throw new Error("The Web App returned HTML. Ensure 'Execute as' is set to 'Me' and 'Who has access' is 'Anyone' in deploy settings.");
-          }
-        }
-
-        const parsed = JSON.parse(trimmed);
-        if (parsed.success === false) {
-          throw new Error(parsed.error || 'Connection rejected by Apps Script Web App.');
-        }
-
-        // Direct browser interaction verified successfully! Store in localStorage client-only settings.
-        localStorage.setItem('a10dance_client_only_apps_script', 'true');
-        localStorage.setItem('a10dance_client_script_url', scriptUrl);
-        localStorage.setItem('a10dance_client_spreadsheet_id', id);
-
-        setSpreadsheetId(id);
-        setSpreadsheetIdToCache(id);
-        setGoogleAppsScriptUrl(scriptUrl);
-        setNeedsAuth(false);
-        setAppsScriptError(null);
-
-        setPunchStatus('SUCCESS');
-        setStatusMessage('Browser-Direct serverless sync active! The application is clocking directly to Google Sheets.');
-        setTimeout(() => setPunchStatus('IDLE'), 6000);
-      } catch (err: any) {
-        setPunchStatus('ERROR');
-        setStatusMessage(`Apps Script Connection Failed: ${err.message || 'Verification rejected'}`);
-        setTimeout(() => setPunchStatus('IDLE'), 15000);
-      }
-    }
-
     refreshLocalData();
   };
 
@@ -471,25 +216,6 @@ export default function App() {
   const handleSaveRoster = async (updatedRoster: Employee[]) => {
     const confirmation = window.confirm('Confirm roster bulk modification? This overwrites matching index rows in your Google Sheet.');
     if (!confirmation) return;
-
-    if (isClientOnlyMode()) {
-      const clientUrl = getClientScriptUrl();
-      if (clientUrl) {
-        try {
-          const success = await clientUpdateRoster(clientUrl, updatedRoster);
-          if (success) {
-            setEmployeesList(updatedRoster);
-            updateCachedEmployees(updatedRoster);
-            alert('Roster indices compiled and saved successfully directly to Google Sheets!');
-          } else {
-            throw new Error('Google Sheets roster save failed.');
-          }
-        } catch (e: any) {
-          alert(`Failed to update roster on remote database: ${e.message || String(e)}`);
-        }
-      }
-      return;
-    }
 
     try {
       const res = await fetch('/api/employees/update', {
@@ -519,28 +245,6 @@ export default function App() {
     if (!savedEID) {
       setPunchStatus('ERROR');
       setStatusMessage('Device identified session not active. Register a mobile EID ID before launching scanner!');
-      return;
-    }
-
-    if (isClientOnlyMode()) {
-      const clientUrl = getClientScriptUrl();
-      if (clientUrl) {
-        try {
-          const result = await clientProcessScan(clientUrl, savedEID, scannedBarcode, 'SCAN', '', lastPunchTimes);
-          if (result.success) {
-            setPunchStatus('SUCCESS');
-            setStatusMessage(result.message || `Punch successfully matching login sequence.`);
-            setTimeout(() => setPunchStatus('IDLE'), 6000);
-            refreshLocalData();
-            if (savedEID === '251805') {
-              setShowSpecialModal(true);
-            }
-          }
-        } catch (e: any) {
-          setPunchStatus('ERROR');
-          setStatusMessage(e.message || 'Security ticket validation error.');
-        }
-      }
       return;
     }
 
@@ -598,28 +302,6 @@ export default function App() {
     if (!eid.trim()) {
       setPunchStatus('ERROR');
       setStatusMessage('Operator EID input area cannot stay empty.');
-      return;
-    }
-
-    if (isClientOnlyMode()) {
-      const clientUrl = getClientScriptUrl();
-      if (clientUrl) {
-        try {
-          const result = await clientProcessScan(clientUrl, eid, '', 'MANUAL', comment, lastPunchTimes);
-          if (result.success) {
-            setPunchStatus('SUCCESS');
-            setStatusMessage(result.message || 'DTR punch validated successfully.');
-            setTimeout(() => setPunchStatus('IDLE'), 6000);
-            refreshLocalData();
-            if (eid.trim() === '251805' && result.action === 'LOGIN') {
-              setShowSpecialModal(true);
-            }
-          }
-        } catch (e: any) {
-          setPunchStatus('ERROR');
-          setStatusMessage(e.message || 'Apps Script rejected manual insertion sequence.');
-        }
-      }
       return;
     }
 
@@ -730,9 +412,6 @@ export default function App() {
           onSaveRoster={handleSaveRoster}
           onClose={() => setShowAdmin(false)}
           spreadsheetId={spreadsheetId}
-          googleAppsScriptUrl={googleAppsScriptUrl}
-          appsScriptError={appsScriptError}
-          onBindAppsScript={handleBindAppsScript}
           onSaveSpreadsheetId={handleSaveSpreadsheetId}
           user={user}
           needsAuth={needsAuth}

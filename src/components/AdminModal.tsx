@@ -19,182 +19,11 @@ import {
 } from 'lucide-react';
 import { Employee } from '../types';
 
-const APPS_SCRIPT_PROTOTYPE = `/**
- * Google Sheets Proxy for Permanent Sync (PCC Attendance V1)
- * Paste this code in Extensions -> Apps Script, then deploy as a Web App:
- * - Execute as: Me (your Google account)
- * - Who has access: Anyone
- */
-
-function doPost(e) {
-  try {
-    var rawData = e.postData.contents;
-    var payload = JSON.parse(rawData);
-    var action = payload.action;
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // Auto-create sheets if they don't exist
-    ensureSheetsExist(ss);
-
-    if (action === 'get_employees') {
-      var data = getSheetData(ss, 'employees');
-      return ContentService.createTextOutput(JSON.stringify({ values: data }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    if (action === 'get_raw_attendance') {
-      var data = getSheetData(ss, 'attendance');
-      return ContentService.createTextOutput(JSON.stringify({ values: data }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-
-    if (action === 'get_sessions') {
-      var data = getSheetData(ss, 'attendance_sessions');
-      return ContentService.createTextOutput(JSON.stringify({ values: data }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-
-    if (action === 'get_legacy_logs') {
-      var data = getSheetData(ss, 'attendance_logs');
-      return ContentService.createTextOutput(JSON.stringify({ values: data }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    if (action === 'save_roster_update') {
-      var sheet = ss.getSheetByName('employees');
-      sheet.clearContents();
-      sheet.appendRow(['ID', 'EID', 'Name', 'DailyRate', 'PhilHealth']);
-      var list = payload.roster;
-      for (var i = 0; i < list.length; i++) {
-        sheet.appendRow([list[i].id, list[i].eid, list[i].name, list[i].rate_per_day, list[i].philhealth]);
-      }
-      return ContentService.createTextOutput(JSON.stringify({ success: true }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    if (action === 'save_raw_attendance') {
-      var sheet = ss.getSheetByName('attendance');
-      var item = payload.attendance;
-      sheet.appendRow([item.id, item.employee_id, item.action, item.source, item.timestamp, item.remarks]);
-      return ContentService.createTextOutput(JSON.stringify({ success: true }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    if (action === 'process_session_and_legacy') {
-      var session = payload.session;
-      var legacy = payload.legacy;
-      
-      // 1. Session Updates
-      var sSheet = ss.getSheetByName('attendance_sessions');
-      var sData = sSheet.getDataRange().getValues();
-      var foundSIndex = -1;
-      if (session.id) {
-        for (var i = 1; i < sData.length; i++) {
-          if (String(sData[i][0]).trim() === String(session.id).trim()) {
-            foundSIndex = i + 1;
-            break;
-          }
-        }
-      }
-      if (foundSIndex !== -1) {
-        sSheet.getRange(foundSIndex, 4).setValue(session.logout_at);
-      } else {
-        sSheet.appendRow([session.id, session.employee_id, session.login_at, session.logout_at || '', session.date]);
-      }
-      
-      // 2. Legacy Log Updates
-      var lSheet = ss.getSheetByName('attendance_logs');
-      var lData = lSheet.getDataRange().getValues();
-      var foundLIndex = -1;
-      
-      for (var j = lData.length - 1; j >= 1; j--) {
-        if (String(lData[j][1]).trim() === String(legacy.eid).trim() && !lData[j][4]) {
-          foundLIndex = j + 1;
-          break;
-        }
-      }
-      
-      if (foundLIndex !== -1) {
-        lSheet.getRange(foundLIndex, 4).setValue(legacy.start_time);
-        lSheet.getRange(foundLIndex, 5).setValue(legacy.end_time);
-        lSheet.getRange(foundLIndex, 6).setValue(legacy.date);
-        lSheet.getRange(foundLIndex, 7).setValue(legacy.remarks);
-        lSheet.getRange(foundLIndex, 8).setValue(legacy.tardiness);
-        lSheet.getRange(foundLIndex, 9).setValue(legacy.undertime);
-      } else {
-        lSheet.appendRow([
-          legacy.id,
-          legacy.eid,
-          legacy.name,
-          legacy.start_time,
-          legacy.end_time || '',
-          legacy.date,
-          legacy.remarks || '',
-          legacy.tardiness || 0,
-          legacy.undertime || 0
-        ]);
-      }
-      
-      return ContentService.createTextOutput(JSON.stringify({ success: true }))
-                           .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    return ContentService.createTextOutput(JSON.stringify({ error: 'Unknown action' }))
-                         .setMimeType(ContentService.MimeType.JSON);
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({ error: error.message }))
-                         .setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-function doGet(e) {
-  return ContentService.createTextOutput("Google Sheets Web App Proxy is Active.").setMimeType(ContentService.MimeType.TEXT);
-}
-
-function ensureSheetsExist(ss) {
-  var required = {
-    'employees': ['ID', 'EID', 'Name', 'DailyRate', 'PhilHealth'],
-    'attendance': ['ID', 'EmployeeID', 'Action', 'Source', 'Timestamp', 'Remarks'],
-    'attendance_sessions': ['ID', 'EmployeeID', 'LoginAt', 'LogoutAt', 'Date'],
-    'attendance_logs': ['ID', 'EID', 'Name', 'StartTime', 'EndTime', 'Date', 'Remarks', 'Tardiness', 'Undertime']
-  };
-  for (var name in required) {
-    var sheet = ss.getSheetByName(name);
-    if (!sheet) {
-      sheet = ss.insertSheet(name);
-      sheet.appendRow(required[name]);
-    }
-  }
-}
-
-function getSheetData(ss, name) {
-  var sheet = ss.getSheetByName(name);
-  if (!sheet) return [];
-  var rows = sheet.getDataRange().getValues();
-  if (rows.length <= 1) return [];
-  var list = [];
-  for (var i = 1; i < rows.length; i++) {
-    var row = rows[i];
-    var mapped = row.map(function(cell) {
-      if (cell instanceof Date) {
-        return cell.toISOString();
-      }
-      return cell;
-    });
-    list.push(mapped);
-  }
-  return list;
-}
-`;
-
 interface AdminModalProps {
   onClose: () => void;
   onSaveRoster: (roster: Employee[]) => Promise<void>;
   employeesList: Employee[];
   spreadsheetId: string | null;
-  googleAppsScriptUrl: string | null;
-  appsScriptError?: string | null;
-  onBindAppsScript: (id: string, scriptUrl: string) => Promise<void>;
   onSaveSpreadsheetId: (id: string) => void;
   user: any;
   needsAuth: boolean;
@@ -207,9 +36,6 @@ export default function AdminModal({
   onSaveRoster,
   employeesList,
   spreadsheetId,
-  googleAppsScriptUrl,
-  appsScriptError,
-  onBindAppsScript,
   onSaveSpreadsheetId,
   user,
   needsAuth,
@@ -228,17 +54,10 @@ export default function AdminModal({
 
   // Google Spreadsheet active connection ID edit state
   const [tempId, setTempId] = useState(spreadsheetId || '');
-  const [tempScriptUrl, setTempScriptUrl] = useState(googleAppsScriptUrl || '');
-  const [showAppsScriptGuide, setShowAppsScriptGuide] = useState(false);
-  const [copiedCode, setCopiedCode] = useState(false);
 
   useEffect(() => {
     setTempId(spreadsheetId || '');
   }, [spreadsheetId]);
-
-  useEffect(() => {
-    setTempScriptUrl(googleAppsScriptUrl || '');
-  }, [googleAppsScriptUrl]);
 
   const handleSubmitId = (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,31 +66,6 @@ export default function AdminModal({
     const normalizedId = urlMatch && urlMatch[1] ? urlMatch[1] : rawId;
     onSaveSpreadsheetId(normalizedId);
     setTempId(normalizedId);
-  };
-
-  const handleBindAppsScriptSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const rawId = tempId.trim();
-    const urlMatch = rawId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    const normalizedId = urlMatch && urlMatch[1] ? urlMatch[1] : rawId;
-    const scriptUrl = tempScriptUrl.trim();
-    if (!normalizedId || !scriptUrl) {
-      alert("Please supply both your spreadsheet ID and deployed Google Apps Script Web App URL.");
-      return;
-    }
-    onBindAppsScript(normalizedId, scriptUrl);
-  };
-
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(APPS_SCRIPT_PROTOTYPE);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 3000);
-  };
-
-  const handleDisconnectAll = async () => {
-    const confirmTerm = window.confirm("Are you sure you want to completely unbind this Spreadsheet connection and switch back to server-local cache storage?");
-    if (!confirmTerm) return;
-    onSaveSpreadsheetId('');
   };
 
   // Spreadsheets list edit states
@@ -473,248 +267,110 @@ export default function AdminModal({
         <div className="flex-1 overflow-y-auto space-y-6 min-h-[40vh] pr-2">
 
           {/* Google Sheets Integration Section */}
-          <div className="bg-orange-50/20 border border-orange-100 p-5 rounded-2xl space-y-5">
+          <div className="bg-orange-50/20 border border-orange-100 p-4 rounded-2xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-orange-100/60 pb-3">
               <div>
-                <h4 className="font-sans text-xs font-semibold text-zinc-900">Google Sheets Integration Panel</h4>
+                <h4 className="font-sans text-xs font-semibold text-zinc-900">Google Sheets Integration</h4>
                 <p className="font-sans text-[10px] text-zinc-500">
-                  Configure bulletproof persistent synchronization for roster lists, attendance clock records, and time logs.
+                  Manage active connections of synchronized payroll tables and daily session registries.
                 </p>
               </div>
               <div>
-                <span className={`px-2 py-0.5 rounded-full font-mono text-[9px] font-bold uppercase tracking-wider ${spreadsheetId ? (googleAppsScriptUrl ? 'bg-emerald-50 text-emerald-700 border border-emerald-150' : 'bg-indigo-50 text-indigo-700 border border-indigo-150') : 'bg-amber-50 text-amber-700 border border-amber-150'}`}>
-                  {spreadsheetId ? (googleAppsScriptUrl ? 'Permanent Apps Script Sync' : 'Active Google Session Sync') : 'Standby / Local Fallback'}
+                <span className={`px-2 py-0.5 rounded-full font-mono text-[9px] font-bold uppercase tracking-wider ${spreadsheetId && !needsAuth ? 'bg-indigo-50 text-indigo-700 border border-indigo-150' : 'bg-amber-50 text-amber-700 border border-amber-150'}`}>
+                  {spreadsheetId && !needsAuth ? 'Connected / Active Sync' : 'Standby / Local Fallback'}
                 </span>
               </div>
             </div>
 
-            {googleAppsScriptUrl ? (
-              /* Option B Connected Layout */
-              <div className="space-y-4">
-                {appsScriptError ? (
-                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 space-y-2.5 text-rose-900 shadow-sm animate-pulse">
-                    <div className="flex items-center space-x-2 font-sans text-xs font-bold uppercase tracking-wider text-rose-800">
-                      <span>⚠️ Sync Connectivity Interrupted</span>
-                    </div>
-                    <p className="font-sans text-[11.5px] text-rose-800 leading-relaxed font-medium">
-                      Your configured Apps Script URL is returning invalid responses (e.g., HTML login/authorization redirects instead of JSON data). Click records are stored safely in local server battery cache:
-                    </p>
-                    <div className="bg-white/90 p-3 rounded-lg border border-rose-100 font-mono text-[10.5px] text-rose-950 whitespace-pre-wrap select-all leading-relaxed">
-                      {appsScriptError}
-                    </div>
-                    <p className="font-sans text-[10px] text-rose-700 leading-normal pt-1">
-                      <strong>How to fix this:</strong> Open your Google Apps Script editor, click <strong>Deploy &rarr; New deployment</strong> (or Manage Deployments &rarr; Edit), verify that <strong>Execute as:</strong> "Me" and <strong>Who has access:</strong> "Anyone" are selected, authorize any requested permissions popups, click Deploy, and then copy &amp; paste the produced production web app URL!
-                    </p>
-                  </div>
-                ) : (
-                  <div className="bg-emerald-50/40 border border-emerald-100/60 rounded-xl p-4 space-y-3">
-                    <div className="flex items-center space-x-2 text-emerald-800">
-                      <UserCheck className="h-4 w-4" />
-                      <span className="font-sans text-xs font-bold uppercase tracking-wide">Option B (Permanent Sync) is Live</span>
-                    </div>
-                    <p className="font-sans text-[11px] text-zinc-600 leading-relaxed">
-                      Connected in permanent bypass mode! Attendance logs are permanently synchronized directly to Google Sheets through your securely deployed Google Apps Script bridge. No re-logins or session timeouts will occur.
-                    </p>
-                  </div>
-                )}
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                  <div className="bg-white/80 p-2.5 rounded-lg border border-zinc-200 truncate">
-                    <span className="block font-mono text-[8px] font-bold uppercase text-zinc-400">Synchronized Spreadsheet ID</span>
-                    <span className="font-mono text-[10px] text-zinc-700 select-all" title={spreadsheetId || ''}>{spreadsheetId}</span>
-                  </div>
-
-                  <div className="bg-white/80 p-2.5 rounded-lg border border-zinc-200 truncate">
-                    <span className="block font-mono text-[8px] font-bold uppercase text-zinc-400">Apps Script Web App Endpoint</span>
-                    <span className="font-mono text-[10px] text-zinc-700 select-all" title={googleAppsScriptUrl}>{googleAppsScriptUrl}</span>
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="button"
-                    onClick={handleDisconnectAll}
-                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-100 text-rose-600 rounded-lg font-sans text-[10px] font-semibold transition-colors cursor-pointer"
-                  >
-                    Unbind Connection (Go Offline/Standby)
-                  </button>
-                </div>
-              </div>
-            ) : spreadsheetId && !needsAuth ? (
-              /* Option A Connected Layout */
-              <div className="space-y-4">
-                <div className="bg-indigo-50/40 border border-indigo-100/60 rounded-xl p-4 space-y-3">
-                  <div className="flex items-center space-x-2 text-indigo-800">
-                    <UserCheck className="h-4 w-4" />
-                    <span className="font-sans text-xs font-bold uppercase tracking-wide">Option A (Standard Session Sync) is Live</span>
-                  </div>
-                  <p className="font-sans text-[11px] text-zinc-600 leading-relaxed">
-                    Browser session proxy connected to spreadsheet. However, standard browser session tokens expire every 60 minutes and request manual admin re-login. We strongly recommend switching to Option B below for seamless, permanent background syncing.
-                  </p>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                    <div className="bg-white/80 p-2.5 rounded-lg border border-indigo-100 truncate">
-                      <span className="block font-mono text-[8px] font-bold uppercase text-zinc-400">Authorized Admin</span>
-                      <span className="font-sans text-xs text-zinc-700">{user?.displayName || 'Authorized Account'} ({user?.email})</span>
-                    </div>
-
-                    <div className="bg-white/80 p-2.5 rounded-lg border border-indigo-100 truncate">
-                      <span className="block font-mono text-[8px] font-bold uppercase text-zinc-400">Active Spreadsheet ID</span>
-                      <span className="font-mono text-[10px] text-zinc-700 select-all" title={spreadsheetId}>{spreadsheetId}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-between items-center pt-2">
-                    <button
-                      type="button"
-                      onClick={onLogout}
-                      className="px-2.5 py-1.5 font-sans text-[10px] text-zinc-500 hover:text-rose-600 transition-colors cursor-pointer"
-                    >
-                      Sign Out Account
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleDisconnectAll}
-                      className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-100 text-rose-600 rounded-lg font-sans text-[10px] font-semibold transition-colors cursor-pointer"
-                    >
-                      Unbind Connection
-                    </button>
-                  </div>
-                </div>
+            {needsAuth ? (
+              <div className="space-y-3">
+                <p className="font-sans text-[11px] text-zinc-500 italic leading-relaxed">
+                  Google Account integration is currently disconnected. An active Google session is required to synchronize logs directly to your spreadsheets.
+                </p>
+                <button
+                  type="button"
+                  onClick={onLogin}
+                  className="inline-flex items-center space-x-1.5 rounded-lg bg-orange-600 px-3.5 py-2 font-sans text-xs font-semibold text-white hover:bg-orange-700 shadow-sm transition-colors cursor-pointer"
+                >
+                  <UserCheck className="h-4 w-4" />
+                  <span>Connect Google Account</span>
+                </button>
               </div>
             ) : (
-              /* Unconnected state: display choice of Option B or Option A */
               <div className="space-y-4">
-                <p className="font-sans text-[11px] text-zinc-500 italic leading-relaxed bg-white p-3.5 border border-zinc-100 rounded-xl">
-                  Google Sheet integration is currently disconnected. App clock records are stored safely in local server battery cache. Pick a sync option below to connect.
-                </p>
+                {/* Account Details Block */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white/70 border border-orange-100/50 p-3 rounded-xl">
+                  <div className="space-y-0.5">
+                    <span className="block font-mono text-[9px] font-bold uppercase tracking-wider text-zinc-400">Authorized Operator Account</span>
+                    <p className="font-sans text-xs font-medium text-zinc-800">
+                      {user?.displayName || 'Authorized Admin'}
+                    </p>
+                    <p className="font-mono text-[10px] text-zinc-500">
+                      {user?.email}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onLogout}
+                    className="inline-flex items-center space-x-1 hover:bg-rose-50 text-rose-600 hover:text-rose-700 font-sans text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border border-transparent hover:border-rose-100 transition-colors"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    <span>Disconnect Account</span>
+                  </button>
+                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* OPTION B (RECOMMENDED) */}
-                  <div className="bg-white border border-emerald-100 hover:border-emerald-200 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="bg-emerald-50 text-emerald-800 text-[8px] font-bold uppercase px-2 py-0.5 rounded">Option B</span>
-                        <span className="text-[9px] font-sans font-semibold text-emerald-600">Bulletproof & Permanent ★</span>
-                      </div>
-                      <h5 className="font-sans text-xs font-bold text-zinc-800">Google Apps Script Web App sync</h5>
-                      <p className="font-sans text-[10px] text-zinc-500 leading-normal">
-                        Bypass all Google token timeouts using a custom proxy web app. Sync is permanent and operates automatically in the background forever on free Google accounts. No re-logins needed!
+                {/* Spreadsheet ID config */}
+                {spreadsheetId ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/50 border border-zinc-150 p-3 rounded-lg">
+                    <div className="truncate flex-1">
+                      <span className="block font-mono text-[9px] font-bold uppercase tracking-wider text-zinc-400">Bound Google Spreadsheet ID</span>
+                      <p className="font-mono text-[11px] text-zinc-600 truncate select-all mt-0.5" title={spreadsheetId}>
+                        {spreadsheetId}
                       </p>
                     </div>
-
-                    <div className="pt-2 border-t border-zinc-100 space-y-3">
-                      <button
-                        type="button"
-                        onClick={() => setShowAppsScriptGuide(!showAppsScriptGuide)}
-                        className="text-[10px] text-indigo-600 hover:text-indigo-800 font-sans font-medium underline flex items-center gap-1 cursor-pointer"
-                      >
-                        {showAppsScriptGuide ? "Hide Setup Instructions" : "Show Setup Instructions & App Code"}
-                      </button>
-
-                      {showAppsScriptGuide && (
-                        <div className="bg-zinc-50 border border-zinc-200 p-3 rounded-lg space-y-2.5 max-h-[220px] overflow-y-auto">
-                          <p className="font-sans text-[9px] text-zinc-655 leading-normal">
-                            1. Open your target Google Spreadsheet. Make sure it is completely public (anyone with link can access) or share permissions are set.<br />
-                            2. Click <strong>Extensions &rarr; Apps Script</strong>.<br />
-                            3. Under Project Code, clean current script and paste the copyable template.<br />
-                            4. Click <strong>Deploy &rarr; New deployment</strong>. Select type as <strong>Web app</strong>.<br />
-                            5. Set <strong>Execute as:</strong> "Me" and <strong>Who has access:</strong> "Anyone". Run it.<br />
-                            6. Copy the generated Web App URL and paste it below alongside your Sheet ID!
-                          </p>
-                          <button
-                            type="button"
-                            onClick={handleCopyCode}
-                            className={`w-full py-1.5 rounded text-[10px] font-sans font-medium text-white transition-colors cursor-pointer ${copiedCode ? 'bg-emerald-600' : 'bg-zinc-800 hover:bg-zinc-950'}`}
-                          >
-                            {copiedCode ? "✓ Copied Macro Code!" : "Copy Full Apps Script Code Template"}
-                          </button>
-                        </div>
-                      )}
-
-                      <form onSubmit={handleBindAppsScriptSubmit} className="space-y-2">
-                        <div className="space-y-1">
-                          <label className="block font-mono text-[8px] font-bold uppercase tracking-wider text-zinc-400">Google Sheet ID or URL</label>
-                          <input
-                            type="text"
-                            required
-                            value={tempId}
-                            onChange={(e) => setTempId(e.target.value)}
-                            placeholder="e.g. 1aBCdEfGhIjK... or copy URL"
-                            className="w-full rounded-lg bg-zinc-50 border border-zinc-200 px-2.5 py-1.5 font-mono text-[10px] text-zinc-800 outline-none focus:border-emerald-500"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="block font-mono text-[8px] font-bold uppercase tracking-wider text-zinc-400">Apps Script Web App URL</label>
-                          <input
-                            type="text"
-                            required
-                            value={tempScriptUrl}
-                            onChange={(e) => setTempScriptUrl(e.target.value)}
-                            placeholder="https://script.google.com/macros/s/.../exec"
-                            className="w-full rounded-lg bg-zinc-50 border border-zinc-200 px-2.5 py-1.5 font-mono text-[10px] text-zinc-800 outline-none focus:border-emerald-500"
-                          />
-                        </div>
-
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const confirmUnbind = window.confirm('Are you sure you want to unbind this Google Sheet? Disconnecting will stop real-time remote syncing and enter standalone offline mode.');
+                        if (confirmUnbind) {
+                          onSaveSpreadsheetId('');
+                          setTempId('');
+                          alert('Google Sheet unlinked successfully! App is now running in local standby backup mode.');
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg font-sans text-xs font-semibold border border-rose-100 transition-colors cursor-pointer text-center whitespace-nowrap"
+                    >
+                      Unbind Spreadsheet
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSubmitId} className="space-y-3">
+                    <div>
+                      <span className="block font-mono text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                        Connect Google Spreadsheet ID or URL
+                      </span>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          required
+                          value={tempId}
+                          onChange={(e) => setTempId(e.target.value)}
+                          placeholder="e.g. 1aBCdEfGhIjK... or copy Spreadsheet URL"
+                          className="flex-1 rounded-lg border bg-white border-zinc-200 px-3 py-1.5 font-mono text-xs text-zinc-800 outline-none focus:border-orange-500"
+                        />
                         <button
                           type="submit"
-                          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-sans text-[10.5px] font-semibold py-2 rounded-lg transition-colors cursor-pointer"
+                          className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-sans text-xs font-semibold px-4 py-1.5 transition-colors whitespace-nowrap"
                         >
-                          Establish Permanent Sync
+                          Bind Sheet
                         </button>
-                      </form>
-                    </div>
-                  </div>
-
-                  {/* OPTION A */}
-                  <div className="bg-white border border-zinc-200 hover:border-zinc-300 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="bg-zinc-100 text-zinc-700 text-[8px] font-bold uppercase px-2 py-0.5 rounded">Option A</span>
-                        <span className="text-[9px] font-sans font-semibold text-amber-600">Standard OAuth</span>
                       </div>
-                      <h5 className="font-sans text-xs font-bold text-zinc-800">Direct Google Popup login</h5>
-                      <p className="font-sans text-[10px] text-zinc-500 leading-normal">
-                        Use full authorization protocols inside your web browser. This popups Google permission fields, let us sync immediately, but OAuth connection tokens expire after 1 hour and must be signed in again next time.
+                      <p className="font-sans text-[10px] text-zinc-400 mt-1.5">
+                        Tip: Open your Google Sheet, verify it is shared with view/edit access, and paste its URL or alphanumeric ID above.
                       </p>
                     </div>
-
-                    <div className="pt-2 border-t border-zinc-100 space-y-3">
-                      <div className="space-y-2">
-                        <div className="space-y-1 font-sans">
-                          <label className="block font-mono text-[8px] font-bold uppercase tracking-wider text-zinc-400">Google Sheet ID or URL</label>
-                          <input
-                            type="text"
-                            value={tempId}
-                            onChange={(e) => setTempId(e.target.value)}
-                            placeholder="e.g. 1aBCdEfGhIjK..."
-                            className="w-full rounded-lg bg-zinc-50 border border-zinc-200 px-2.5 py-1.5 font-mono text-[10px] text-zinc-800 outline-none focus:border-indigo-500"
-                          />
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!tempId.trim()) {
-                              alert("Please paste your target spreadsheet ID or URL first, then click connection login.");
-                              return;
-                            }
-                            const rawId = tempId.trim();
-                            const urlMatch = rawId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-                            const normalizedId = urlMatch && urlMatch[1] ? urlMatch[1] : rawId;
-                            onSaveSpreadsheetId(normalizedId);
-                            onLogin();
-                          }}
-                          className="w-full inline-flex items-center justify-center space-x-1 hover:bg-zinc-100 text-zinc-700 font-sans text-[10.5px] font-semibold py-2 rounded-lg border border-zinc-200 shadow-sm transition-colors cursor-pointer"
-                        >
-                          <UserCheck className="h-3.5 w-3.5" />
-                          <span>Login & Sync Standard OAuth</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  </form>
+                )}
               </div>
             )}
           </div>
