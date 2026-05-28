@@ -1,0 +1,6 @@
+{
+  "name": "Pagbilao Command Center DTR",
+  "description": "Daily Time Record (DTR) Tracker System for Pagbilao Command Center crew rosters, powered by Google Sheets.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
