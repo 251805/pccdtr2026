@@ -6,7 +6,7 @@
 import { Employee, Attendance, AttendanceSession, AttendanceLogLegacy } from '../types';
 import { SEED_EMPLOYEES } from './seedEmployees';
 import { db } from './firebase';
-import { collection, getDocs, addDoc, updateDoc, doc, query, where, orderBy, getDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, updateDoc, doc, query, where, orderBy, getDoc, setDoc } from 'firebase/firestore';
 
 // In-memory fallback database
 export let fallbackEmployees: Employee[] = [...SEED_EMPLOYEES];
@@ -14,75 +14,7 @@ export let fallbackAttendance: Attendance[] = [];
 export let fallbackSessions: AttendanceSession[] = [];
 export let fallbackLegacyLogs: AttendanceLogLegacy[] = [];
 
-// Shared server state for OAuth
-// No longer used with Firebase
-
-// REST Google Sheets Helper - No longer used
-
-/**
- * Ensures required sheets ("employees", "attendance", "attendance_sessions", "attendance_logs")
- * exist in the working spreadsheet.
- */
-export async function ensureSpreadsheetStructure() {
-  if (!adminAccessToken || !activeSpreadsheetId) return;
-
-  try {
-    // Check if sheets exist by fetching spreadsheet details
-    const meta = await sheetsFetch('', 'GET');
-    const existingTitles = meta.sheets?.map((s: any) => s.properties?.title) || [];
-
-    const requiredSheets = ['employees', 'attendance', 'attendance_sessions', 'attendance_logs'];
-    const addRequests: any[] = [];
-
-    for (const sheet of requiredSheets) {
-      if (!existingTitles.includes(sheet)) {
-        addRequests.push({
-          addSheet: {
-            properties: { title: sheet }
-          }
-        });
-      }
-    }
-
-    if (addRequests.length > 0) {
-      await sheetsFetch(':batchUpdate', 'POST', { requests: addRequests });
-    }
-
-    // Now write headers to sheets that are newly created / empty
-    await initializeHeadersIfEmpty();
-  } catch (error) {
-    console.error('Error ensuring spreadsheet structure:', error);
-  }
-}
-
-async function initializeHeadersIfEmpty() {
-  const checkAndInitRange = async (sheetName: string, headers: string[]) => {
-    try {
-      const data = await sheetsFetch(`/values/${sheetName}!A1:Z5`, 'GET');
-      if (!data.values || data.values.length === 0) {
-        // Sheet empty, write headers
-        await sheetsFetch(`/values/${sheetName}!A1:append?valueInputOption=USER_ENTERED`, 'POST', {
-          values: [headers]
-        });
-        
-        // If employee sheet, push our initial seed workers immediately
-        if (sheetName === 'employees') {
-          const rows = fallbackEmployees.map(e => [e.id, e.eid, e.name, e.rate_per_day, e.philhealth]);
-          await sheetsFetch(`/values/employees!A2:append?valueInputOption=USER_ENTERED`, 'POST', {
-            values: rows
-          });
-        }
-      }
-    } catch (e) {
-      console.error(`Failed to initialize headers for sheet ${sheetName}:`, e);
-    }
-  };
-
-  await checkAndInitRange('employees', ['ID', 'EID', 'Name', 'DailyRate', 'PhilHealth']);
-  await checkAndInitRange('attendance', ['ID', 'EmployeeID', 'Action', 'Source', 'Timestamp', 'Remarks']);
-  await checkAndInitRange('attendance_sessions', ['ID', 'EmployeeID', 'LoginAt', 'LogoutAt', 'Date']);
-  await checkAndInitRange('attendance_logs', ['ID', 'EID', 'Name', 'StartTime', 'EndTime', 'Date', 'Remarks', 'Tardiness', 'Undertime']);
-}
+// No longer used
 
 /**
  * Fetches all Employees from Firestore or falls back to server memory
@@ -170,29 +102,12 @@ export async function processSessionAndLegacyWrite(
     };
     fallbackLegacyLogs.push(legacyLog);
 
-    // Push details to Google Sheets
-    if (adminAccessToken && activeSpreadsheetId) {
-      try {
-        await sheetsFetch('/values/attendance_sessions!A2:append?valueInputOption=USER_ENTERED', 'POST', {
-          values: [[session.id, session.employee_id, session.login_at, '', session.date]]
-        });
-
-        await sheetsFetch('/values/attendance_logs!A2:append?valueInputOption=USER_ENTERED', 'POST', {
-          values: [[
-            legacyLog.id,
-            legacyLog.eid,
-            legacyLog.name,
-            legacyLog.start_time,
-            '',
-            legacyLog.date,
-            legacyLog.remarks,
-            legacyLog.tardiness,
-            0
-          ]]
-        });
-      } catch (e) {
-        console.error('Failed to sync login session to Google Sheets:', e);
-      }
+    // Push details to Firestore
+    try {
+        await addDoc(collection(db, 'sessions'), session);
+        await addDoc(collection(db, 'legacy_logs'), legacyLog);
+    } catch (e) {
+        console.error('Failed to sync login session to Firestore:', e);
     }
   } else {
     // Action LOGOUT
@@ -271,11 +186,14 @@ export async function processSessionAndLegacyWrite(
       }, { merge: true });
 
       // 2. Write/Update Legacy Log
-      await setDoc(doc(db, 'legacy_logs', legacyLog.id), {
-        ...legacyLog,
-        end_time: timestamp,
-        undertime
-      }, { merge: true });
+      if (legacyIdx !== -1) {
+        await setDoc(doc(db, 'legacy_logs', fallbackLegacyLogs[legacyIdx].id), {
+            ...fallbackLegacyLogs[legacyIdx]
+        }, { merge: true });
+      } else {
+        // If no existing log was found, it was just pushed to fallbackLegacyLogs
+        await addDoc(collection(db, 'legacy_logs'), fallbackLegacyLogs[fallbackLegacyLogs.length - 1]);
+      }
     } catch (e) {
       console.error('Failed to update Firestore with checkout details:', e);
     }
@@ -290,7 +208,11 @@ export async function saveRosterUpdate(updatedRoster: Employee[]): Promise<void>
 
   try {
     for (const emp of updatedRoster) {
-      await setDoc(doc(db, 'employees', emp.id), emp, { merge: true });
+      if (emp.id) {
+        await setDoc(doc(db, 'employees', String(emp.id)), emp, { merge: true });
+      } else {
+        await addDoc(collection(db, 'employees'), emp);
+      }
     }
   } catch (e) {
     console.error('Failed to sync bulk roster update to Firestore:', e);
