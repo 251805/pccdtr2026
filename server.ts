@@ -5,7 +5,6 @@
 
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { 
   normalizeEID, 
   getClosestShift, 
@@ -279,6 +278,47 @@ app.post("/api/scan", async (req, res) => {
 });
 
 
+// Proxy endpoint to prevent CORS blocks of Apps Script Web App in static / serverless hosting environments (e.g. Vercel)
+app.post("/api/proxy", async (req: express.Request, res: express.Response) => {
+  const { scriptUrl, payload } = req.body;
+  if (!scriptUrl) {
+    return res.status(400).json({ error: "scriptUrl is required." });
+  }
+
+  try {
+    // Perform server-to-server request
+    const response = await fetch(scriptUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ 
+        error: `Apps Script replied with HTTP Error ${response.status}` 
+      });
+    }
+
+    const rawText = await response.text();
+    const trimmed = rawText.trim();
+
+    if (trimmed.startsWith("<")) {
+      return res.status(422).json({ 
+        error: "Apps Script returned HTML. Check permissions (Anyone)." 
+      });
+    }
+
+    const parsed = JSON.parse(trimmed);
+    res.json(parsed);
+  } catch (err: any) {
+    console.error("Proxy error:", err);
+    res.status(500).json({ error: err.message || "Failed to communicate with Apps Script via proxy" });
+  }
+});
+
+
 // -------------------------------------------------------------
 // Vite Dev & Production Serving Setup
 // -------------------------------------------------------------
@@ -290,6 +330,7 @@ async function initServerAndListeners() {
   }
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

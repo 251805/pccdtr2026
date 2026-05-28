@@ -22,6 +22,33 @@ function getManilaDateStr(dOffset = 0): string {
 }
 
 async function callDirectAppsScript(url: string, payload: any): Promise<any> {
+  // Try routing through our own lightweight /api/proxy endpoint first to bypass browser CORS blocks
+  try {
+    const proxyResponse = await fetch('/api/proxy', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        scriptUrl: url,
+        payload: payload
+      })
+    });
+
+    if (proxyResponse.ok) {
+      const parsed = await proxyResponse.json();
+      if (parsed.success === false) {
+        throw new Error(parsed.error || "Google Apps Script internal execution failure (via proxy).");
+      }
+      return parsed;
+    } else {
+      console.warn(`Proxy API returned status ${proxyResponse.status}. Attempting direct browser ping as fallback...`);
+    }
+  } catch (proxyError) {
+    console.warn("Proxy tunnel path unreachable or failed, switching to browser-direct fetch handshake fallback...", proxyError);
+  }
+
+  // Pure browser-direct fetch fallback (fails on some strict cors setups)
   const response = await fetch(url, {
     method: 'POST',
     headers: {

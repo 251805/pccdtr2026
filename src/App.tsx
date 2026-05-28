@@ -394,12 +394,33 @@ export default function App() {
           setStatusMessage(fallbackMsg);
         }
 
-        // Test the Apps Script URL directly from the client browser! Use text/plain to avoid CORS preflight OPTIONS requests.
-        const response = await fetch(scriptUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'get_employees' })
-        });
+        // Test the Apps Script URL via our lightweight proxy first to avoid browser CORS / redirect preflight blocks
+        let response;
+        let viaProxy = false;
+        try {
+          const proxyTestRes = await fetch('/api/proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              scriptUrl: scriptUrl,
+              payload: { action: 'get_employees' }
+            })
+          });
+          if (proxyTestRes.ok) {
+            response = proxyTestRes;
+            viaProxy = true;
+          }
+        } catch (e) {
+          console.warn("Proxy validation route failed, attempting direct fetch fallback...", e);
+        }
+
+        if (!response) {
+          response = await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ action: 'get_employees' })
+          });
+        }
 
         if (!response.ok) {
           throw new Error(`Google Apps Script directly returned HTTP Error: ${response.status}`);
