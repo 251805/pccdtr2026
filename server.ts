@@ -283,6 +283,12 @@ app.post("/api/scan", async (req, res) => {
 // Vite Dev & Production Serving Setup
 // -------------------------------------------------------------
 async function initServerAndListeners() {
+  if (process.env.VERCEL) {
+    // Under Vercel environment, static routing is handled natively via configuration,
+    // and listeners are managed serverless-side.
+    return;
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -303,3 +309,5 @@ async function initServerAndListeners() {
 }
 
 initServerAndListeners();
+
+export default app;

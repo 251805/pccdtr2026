@@ -287,8 +287,13 @@ export default function App() {
         setNeedsAuth(false);
         refreshLocalData();
       }
-    } catch {
-      alert('Authentication failure. Cancelled by operator.');
+    } catch (e: any) {
+      console.error("Authentication error during admin login:", e);
+      const isDomainErr = e?.code === 'auth/unauthorized-domain' || e?.message?.includes('unauthorized-domain');
+      const domainSuggestion = isDomainErr 
+        ? "\n\nCRITICAL VERCEL STEPS:\n1. Open Firebase Console.\n2. Go to Authentication -> Settings -> Authorized Domains.\n3. Add your Vercel deployment domain (e.g., your-app.vercel.app) to the authorized domains list.\n\nWithout this, Firebase blocks authorization popups on Vercel!" 
+        : "";
+      alert(`Authentication failure. Connection cancelled or domain unauthorized.\n\nDetails: ${e?.message || String(e)}${domainSuggestion}`);
     }
   };
 
