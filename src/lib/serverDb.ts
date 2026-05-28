@@ -67,6 +67,10 @@ async function sheetsFetch(endpoint: string, method: string, body?: any): Promis
 
   if (!response.ok) {
     const errText = await response.text();
+    if (response.status === 401) {
+      console.error('Google Sheets API: Token expired (401). Client needs to re-authenticate.');
+      // Keep previous token, but the client must know to re-login next time it tries to use it.
+    }
     throw new Error(`Google Sheets API Error (${response.status}): ${errText}`);
   }
 
