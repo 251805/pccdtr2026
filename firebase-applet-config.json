@@ -3,6 +3,7 @@
   "appId": "1:180156270797:web:a1463c12751897c79d8184",
   "apiKey": "AIzaSyC2CDxwhXESB1l3eOHdMhsMb8rQOMCRs_s",
   "authDomain": "sharp-rope-7v7sv.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-9cecef4f-9207-4d07-9463-4780da5c0527",
   "storageBucket": "sharp-rope-7v7sv.firebasestorage.app",
   "messagingSenderId": "180156270797",
   "measurementId": ""

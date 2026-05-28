@@ -13,8 +13,6 @@ import {
   calculateUndertime 
 } from "./src/lib/shiftLogic";
 import {
-  setSharedAuth,
-  getSharedAuth,
   ensureSpreadsheetStructure,
   getAllEmployees,
   saveRawAttendance,
@@ -52,47 +50,13 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Configure Google Sheets session details
-app.post("/api/auth/save-token", async (req, res) => {
-  const { accessToken, spreadsheetId } = req.body;
-  if (!accessToken || !spreadsheetId) {
-    return res.status(400).json({ error: "accessToken and spreadsheetId are required." });
-  }
-
-  // Extract pure spreadsheet ID if a full Google Sheets URL was pasted
-  const rawId = String(spreadsheetId).trim();
-  const urlMatch = rawId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  const normalizedId = urlMatch && urlMatch[1] ? urlMatch[1] : rawId;
-
-  setSharedAuth(accessToken, normalizedId);
-  await ensureSpreadsheetStructure();
-
-  res.json({ 
-    success: true, 
-    message: "Google Sheets context saved successfully.",
-    connected: true
-  });
-});
-
-// Clear Google Sheets connection (go offline/back up database mode)
-app.post("/api/auth/clear-token", (req, res) => {
-  setSharedAuth(null, null);
-  res.json({ 
-    success: true, 
-    message: "Google Sheets connection terminated. Operating in Offline storage.",
-    connected: false
-  });
-});
-
 // Get configuration, token status, and current validation tokens
 app.get("/api/config", (req, res) => {
-  const { adminAccessToken, activeSpreadsheetId } = getSharedAuth();
   const todayStr = getManilaDateStr(0);
   const yesterdayStr = getManilaDateStr(-1);
 
   res.json({
-    connected: !!adminAccessToken,
-    spreadsheetId: activeSpreadsheetId,
+    connected: true, // Always true now with Firebase
     todayToken: `a10dance-daily-qr-${todayStr}`,
     yesterdayToken: `a10dance-daily-qr-${yesterdayStr}`,
     serverTime: new Date().toISOString(),

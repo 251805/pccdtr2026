@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "Employee": {
+      "title": "Employee",
+      "description": "Information about an employee",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eid": { "type": "string" },
+        "name": { "type": "string" },
+        "rate_per_day": { "type": "number" },
+        "philhealth": { "type": "number" }
+      },
+      "required": ["id", "eid", "name"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Raw attendance record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "action": { "type": "string" },
+        "source": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "remarks": { "type": "string" }
+      },
+      "required": ["id", "employee_id", "action", "timestamp"]
+    },
+    "AttendanceSession": {
+      "title": "AttendanceSession",
+      "description": "Attendance session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "employee_id": { "type": "string" },
+        "login_at": { "type": "string" },
+        "logout_at": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "required": ["id", "employee_id", "login_at", "date"]
+    },
+    "AttendanceLogLegacy": {
+      "title": "AttendanceLogLegacy",
+      "description": "Legacy attendance log record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eid": { "type": "string" },
+        "name": { "type": "string" },
+        "start_time": { "type": "string" },
+        "end_time": { "type": "string" },
+        "date": { "type": "string" },
+        "remarks": { "type": "string" },
+        "tardiness": { "type": "number" },
+        "undertime": { "type": "number" }
+      },
+      "required": ["id", "eid", "name", "start_time", "date"]
+    }
+  },
+  "firestore": {
+    "employees": { "schema": "Employee", "description": "List of employees" },
+    "attendance": { "schema": "Attendance", "description": "Raw attendance logs" },
+    "sessions": { "schema": "AttendanceSession", "description": "Attendance sessions" },
+    "legacy_logs": { "schema": "AttendanceLogLegacy", "description": "Legacy attendance logs" }
+  }
+}
