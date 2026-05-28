@@ -25,10 +25,9 @@ let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 let spreadsheetId: string | null = null;
 
-// Grab saved Spreadsheet ID and access token from local storage
+// Grab saved Spreadsheet ID from local storage
 if (typeof window !== 'undefined') {
   spreadsheetId = localStorage.getItem('a10dance_spreadsheet_id');
-  cachedAccessToken = localStorage.getItem('a10dance_access_token');
 }
 
 export const setSpreadsheetIdToCache = (id: string | null) => {
@@ -77,9 +76,6 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('a10dance_access_token', credential.accessToken);
-    }
     
     // Automatically post the token to our Express backend so it can handle scan queries
     if (spreadsheetId) {
@@ -132,7 +128,6 @@ export const logout = async () => {
   cachedAccessToken = null;
   spreadsheetId = null;
   if (typeof window !== 'undefined') {
-    localStorage.removeItem('a10dance_access_token');
     localStorage.removeItem('a10dance_spreadsheet_id');
   }
   // Notify backend to drop token context and switch to standby mode
